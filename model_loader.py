@@ -18,11 +18,11 @@ import urllib.parse
 # =======================
 CONFIG = {
     # Provider: "ollama" | "openai" | "anthropic"
-    "provider": "openai",
+    "provider": "ollama",
 
     # Ollama settings
     "ollama_url": "http://localhost:11434/v1",
-    "ollama_model": "qwen3:14b-q8_0",
+    "ollama_model": "qwen2.5-coder:7b",
 
     # OpenAI-compatible (OpenRouter, Groq, etc.)
     "openai_url": "https://openrouter.ai/api/v1",
