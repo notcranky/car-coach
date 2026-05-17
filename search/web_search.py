@@ -5,7 +5,15 @@ Uses Tavily API for car-specific searches.
 
 import os
 import json
-from typing import Optional
+from pathlib import Path
+
+# Load .env file if it exists
+ENV_FILE = Path(__file__).parent.parent / ".env"
+if ENV_FILE.exists():
+    for line in ENV_FILE.read().splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            key, val = line.strip().split("=", 1)
+            os.environ.setdefault(key, val)
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")
