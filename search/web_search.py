@@ -1,7 +1,6 @@
 """
 Web search integration.
 Uses Tavily API for car-specific searches.
-Falls back to a mock if no API key is set.
 """
 
 import os
@@ -21,13 +20,16 @@ class WebSearch:
         Search the web for car-related info.
         Returns formatted results string, or empty string on failure.
         """
-        # Enhance query with car specifics
         enhanced_query = self._enhance_query(query, car_profile)
 
         if self.tavily_available:
-            return self._search_tavily(enhanced_query)
+            result = self._search_tavily(enhanced_query)
+            print(f"[TAVILY SEARCH] query={enhanced_query[:80]} | result_len={len(result)} | has_content={bool(result and len(result)>100)}")
+            return result
         elif self.serper_available:
-            return self._search_serper(enhanced_query)
+            result = self._search_serper(enhanced_query)
+            print(f"[SERPER SEARCH] query={enhanced_query[:80]} | result_len={len(result)} | has_content={bool(result and len(result)>100)}")
+            return result
         else:
             return self._mock_search(query, car_profile)
 
@@ -51,13 +53,12 @@ class WebSearch:
     def _search_tavily(self, query: str) -> str:
         """Search using Tavily API."""
         import urllib.request
-        import urllib.parse
 
         url = "https://api.tavily.com/search"
         payload = json.dumps({
             "query": query,
             "search_depth": "basic",
-            "max_results": 5
+            "max_results": 8
         })
 
         req = urllib.request.Request(
@@ -71,17 +72,21 @@ class WebSearch:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=15) as response:
                 data = json.loads(response.read().decode("utf-8"))
 
             results = []
             for item in data.get("results", []):
                 title = item.get("title", "")
                 url = item.get("url", "")
-                snippet = item.get("content", "")[:200]
-                results.append(f"- {title}\n  {snippet}\n  Source: {url}")
+                content = item.get("content", "")
 
-            return "\n\n".join(results) if results else ""
+                if title and content:
+                    # Include more content for parts research
+                    snippet = content[:300] if content else ""
+                    results.append(f"[{title}]\n{snippet}\nSource: {url}")
+
+            return "\n\n".join(results) if results else "[NO RESULTS FROM TAVILY]"
 
         except Exception as e:
             return f"[Web search failed: {e}]"
@@ -89,7 +94,6 @@ class WebSearch:
     def _search_serper(self, query: str) -> str:
         """Search using SerpAPI (Google)."""
         import urllib.request
-        import urllib.parse
 
         params = json.dumps({
             "q": query,
@@ -107,27 +111,21 @@ class WebSearch:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=15) as response:
                 data = json.loads(response.read().decode("utf-8"))
 
             results = []
-            for item in data.get("organic", [])[:5]:
+            for item in data.get("organic", [])[:8]:
                 title = item.get("title", "")
                 url = item.get("link", "")
-                snippet = item.get("snippet", "")[:200]
-                results.append(f"- {title}\n  {snippet}\n  Source: {url}")
+                snippet = item.get("snippet", "")[:300]
+                results.append(f"[{title}]\n{snippet}\nSource: {url}")
 
-            return "\n\n".join(results) if results else ""
+            return "\n\n".join(results) if results else "[NO RESULTS FROM SERPER]"
 
         except Exception as e:
             return f"[Web search failed: {e}]"
 
     def _mock_search(self, query: str, car: dict) -> str:
-        """Mock search for when no API key is set — for testing."""
-        return f"""[Demo search — set TAVILY_API_KEY or SERPER_API_KEY to enable real web search]
-
-Search query: {query}
-Car: {car.get('year', '')} {car.get('make', '')} {car.get('model', '')} {car.get('engine', '')}
-
-For real search results, get a free Tavily API key at https://tavily.com
-And add it: export TAVILY_API_KEY=your_key_here"""
+        """Mock search for when no API key is set."""
+        return "[MOCK SEARCH - No API key set. Get Tavily key at https://tavily.com]"

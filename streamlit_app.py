@@ -61,11 +61,16 @@ with st.sidebar:
 
     st.divider()
 
+    st.subheader("Debug")
+    show_debug = st.toggle("Show search results", value=False)
+    st.session_state.show_debug = show_debug
+
     if st.button("Clear conversation"):
         st.session_state.messages = []
+        st.session_state.search_results_cache = ""
         st.rerun()
 
-    st.caption("v1.5 — Search-first, model reads from results only")
+    st.caption("v1.6 — Debug mode + better search handling")
 
 # =====================
 # Session state
@@ -81,6 +86,9 @@ if "awaiting_correction" not in st.session_state:
 
 if "search_results_cache" not in st.session_state:
     st.session_state.search_results_cache = ""
+
+if "show_debug" not in st.session_state:
+    st.session_state.show_debug = False
 
 # =====================
 # System prompt — model is a translator, not a source of parts
@@ -228,8 +236,18 @@ if user_input:
             web_search = WebSearch()
             results = web_search.search(user_input, car or {})
 
+        # Show search results in debug mode
+        if show_debug:
+            with st.expander("Search Results (debug)"):
+                if results and len(results) > 50:
+                    st.text(results[:2000])
+                elif results:
+                    st.text(results)
+                else:
+                    st.warning("No results returned from search")
+
         # Check if search actually returned results
-        if not results or "[Web search failed]" in results or len(results) < 50:
+        if not results or "[Web search failed]" in results or "[MOCK SEARCH]" in results or "[NO RESULTS" in results or len(results.strip()) < 50:
             no_results_msg = "I couldn't find any search results for that query. This might be too specific or too broad. Try a simpler question like 'cold air intake for 2014 dodge durango 3.6l' or 'best tune for 2014 durango v6'."
             with st.chat_message("assistant"):
                 st.markdown(no_results_msg)
