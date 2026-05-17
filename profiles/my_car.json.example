@@ -1,0 +1,19 @@
+{
+  "year": "2018",
+  "make": "Subaru",
+  "model": "WRX",
+  "trim": "STI",
+  "engine": "EJ257 2.5L Turbo",
+  "drivetrain": "AWD",
+  "transmission": "6-speed manual",
+  "mileage": "41,200",
+  "currentMods": [
+    "COBB AccessPort Stage 2 Tune",
+    "Megan Racing Catback Exhaust",
+    "Group N Bilstein HDs + Cobra Springs"
+  ],
+  "goals": "Stage 2 power, proper suspension setup, keep it streetable and reliable",
+  "budget": "$5k-$10k total build budget",
+  "focus": "performance",
+  "notes": "Daily driver on weekdays, canyon runs on weekends. Want to stay warranty-friendly where possible."
+}

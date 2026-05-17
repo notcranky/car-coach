@@ -1,0 +1,13 @@
+flask>=2.3.0
+requests>=2.31.0
+urllib3>=2.0.0
+
+# Optional — for better web search
+# tavily-python>=0.3.0  # Get API key at https://tavily.com
+
+# Optional — for Ollama management
+# ollama>=0.1.0
+
+# Optional — for Claude/GPT-4 access
+# anthropic>=0.18.0
+# openai>=1.0.0
