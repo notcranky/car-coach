@@ -10,7 +10,7 @@ from pathlib import Path
 # Load .env file if it exists
 ENV_FILE = Path(__file__).parent.parent / ".env"
 if ENV_FILE.exists():
-    for line in ENV_FILE.read().splitlines():
+    for line in ENV_FILE.read_text().splitlines():
         if "=" in line and not line.strip().startswith("#"):
             key, val = line.strip().split("=", 1)
             os.environ.setdefault(key, val)
