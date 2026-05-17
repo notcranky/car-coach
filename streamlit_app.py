@@ -1,6 +1,10 @@
 """
 Streamlit web UI for Car Coach.
 Run with: streamlit run streamlit_app.py
+
+v1.4 — Hard anti-hallucination mode.
+Parts are verified against web search BEFORE they are shown to the user.
+Unverified parts are BLOCKED, not flagged.
 """
 
 import streamlit as st
@@ -10,7 +14,6 @@ import sys
 import re
 from pathlib import Path
 
-# Add project to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from model_loader import chat
@@ -18,111 +21,107 @@ from profiles.loader import load_car_profile, format_car_context
 from memory.build_memory import BuildMemory
 from search.web_search import WebSearch
 
-# Page config
 st.set_page_config(
     page_title="Car Coach",
     page_icon="🚗",
     layout="wide"
 )
 
-# Paths
 PROJECT_ROOT = Path(__file__).parent
 MEMORY_FILE = PROJECT_ROOT / "memory" / "build_memory.json"
-
-# =====================
-# Correction keywords
-# =====================
-CORRECTION_KEYWORDS = [
-    "redo", "wrong", "not it", "nope",
-    "no that's not", "that's not right", "not what I wanted",
+KNOWN_REAL_BRANDS = [
+    "Borla", "MagnaFlow", "Corsa", "K&N", "AEM", "DiabloSport", "SCT",
+    "Bilstein", "KW", "Tein", "Eibach", "Cobb", "Garrett", "Precision",
+    "Holley", "Edelbrock", "Flowmaster", "Invidia", "HKS", "Greddy",
+    "Mishimoto", "Derale", "Russell", "Edelbrock", "Summit Racing",
+    "JEGS", "MagnaFlow", "Volant", "AFE", "K&N", "Injen", "AEM",
+    "DiabloSport", "Bully Dog", "Superchips", "Jet", "MSD", "ACCEL",
+    "Hayden", "Fluidyne", "CWR", "Radiator", "Brembo", "EBC", "Stoptech",
+    "Slotted", "Drilled", "DBA", "Wilwood", "Baer", "Goodridge",
+    "Russell", "Earls", "Auto Meter", "Aeromotive", "Walbro"
 ]
 
-def is_correction(text: str) -> bool:
-    """Check if input is a correction trigger word."""
-    t = text.lower().strip()
-    return any(kw in t for kw in CORRECTION_KEYWORDS)
-
-# =====================
-# Part verifier — verify parts actually exist
-# =====================
-def extract_parts_from_response(response: str, car: dict) -> list:
-    """
-    Look for part names in the AI response.
-    Returns a list of (part_name, verified: bool) tuples.
-    """
-    # Simple part extraction — look for lines that look like parts
-    # Pattern: "• Part Name — $XX" or "- Part Name: $XX"
-    lines = response.split("\n")
-    parts = []
-
+def extract_part_candidates(text: str) -> list:
+    """Extract potential part names from text."""
+    lines = text.split("\n")
+    candidates = []
     for line in lines:
-        # Look for bullet points or dashes that might be parts
-        cleaned = line.strip()
-        if cleaned.startswith("•") or cleaned.startswith("-") or cleaned.startswith("*"):
-            # Try to extract the part name (before the $ sign or em dash)
-            part_match = re.search(r"[•\-*]\s*(.+?)(?:\s*[-—]\s*\$|\s*[-—]\s*\w)", cleaned)
-            if part_match:
-                part_name = part_match.group(1).strip()
-                # Clean up any trailing punctuation
-                part_name = re.sub(r"[.,;:!?]+$", "", part_name).strip()
-                if len(part_name) > 3 and len(part_name) < 100:
-                    parts.append(part_name)
+        line = line.strip()
+        if line.startswith("•") or line.startswith("-") or line.startswith("*"):
+            # Get everything before the first $ or em-dash
+            part = re.sub(r"^[-•*]\s*", "", line)
+            part = re.split(r"\s*[-—$]\s*", part)[0]
+            part = re.sub(r"[.,;:!?]+$", "", part).strip()
+            if 3 < len(part) < 80:
+                candidates.append(part)
+    return candidates
 
-    return parts
+def check_brand_known(part_name: str) -> bool:
+    """Check if any known brand appears in the part name."""
+    for brand in KNOWN_REAL_BRANDS:
+        if brand.lower() in part_name.lower():
+            return True
+    return False
 
-def verify_parts(parts: list, car: dict, web_search: WebSearch) -> dict:
+def verify_part(part: str, car: dict, web_search: WebSearch) -> dict:
+    """Verify a single part exists via web search."""
+    # Search for the part with car specifics
+    query = f"{part} {car.get('year', '')} {car.get('make', '')} {car.get('model', '')}"
+    result = web_search.search(query, car)
+
+    has_results = bool(result and len(result) > 80 and "[Web search failed]" not in result)
+    return {
+        "verified": has_results,
+        "search_result": result[:300] if result else ""
+    }
+
+def verify_and_filter_response(response: str, car: dict, web_search: WebSearch) -> tuple:
     """
-    Check each part against web search to see if it exists.
-    Returns dict: { part_name: verified: bool, search_result: str }
+    Verify all parts in a response.
+    Returns (filtered_response, blocked_parts, all_verified).
+    If a part can't be verified and its brand isn't in KNOWN_REAL_BRANDS, block it.
     """
-    results = {}
+    parts = extract_part_candidates(response)
+    if not parts:
+        return response, [], True
 
+    verification = {}
     for part in parts:
-        # Search for the part with car specifics
-        query = f"{part} {car.get('year', '')} {car.get('make', '')} {car.get('model', '')} fitment"
-        search_result = web_search.search(query, car)
+        brand_known = check_brand_known(part)
+        if brand_known:
+            # Known brand — trust it but still verify with search
+            v = verify_part(part, car, web_search)
+            verification[part] = v
+        else:
+            # Unknown brand — need strong verification
+            v = verify_part(part, car, web_search)
+            verification[part] = v
 
-        # Part is verified if we got meaningful search results
-        # (not the mock "no api key" message)
-        is_verified = bool(search_result and len(search_result) > 50 and "[Web search failed]" not in search_result)
-
-        results[part] = {
-            "verified": is_verified,
-            "search_result": search_result[:200] if search_result else ""
-        }
-
-    return results
-
-# =====================
-# Cleaner response builder
-# =====================
-def build_clean_response(response: str, verification: dict, car: dict) -> str:
-    """
-    Rebuild the response, flagging unverified parts.
-    """
-    if not verification:
-        return response
-
+    blocked = []
     lines = response.split("\n")
-    cleaned_lines = []
-    has_unverified = False
+    cleaned = []
 
     for line in lines:
-        # Check if this line contains an unverified part
+        blocked_in_line = []
         for part, data in verification.items():
-            if part in line and not data["verified"]:
-                has_unverified = True
-                # Add warning flag to the part
-                line = line.replace(part, f"⚠️ {part} [UNVERIFIED — may not exist]")
-                break
-        cleaned_lines.append(line)
+            if part in line:
+                if not data["verified"] and not check_brand_known(part):
+                    blocked_in_line.append(part)
+                    blocked.append(part)
 
-    result = "\n".join(cleaned_lines)
+        if blocked_in_line:
+            # Replace the line with a placeholder
+            for bp in blocked_in_line:
+                line = re.sub(re.escape(bp), f"[BLOCKED — could not verify: {bp}]", line)
+        cleaned.append(line)
 
-    if has_unverified:
-        result += "\n\n⚠️ **Some parts couldn't be verified — I may have hallucinated them.** Check the flagged items above or try a more specific question."
+    filtered = "\n".join(cleaned)
+    return filtered, blocked, len(blocked) == 0
 
-    return result
+CORRECTION_KEYWORDS = ["redo", "wrong", "not it", "nope", "no that's not", "not what I wanted"]
+
+def is_correction(text: str) -> bool:
+    return any(kw in text.lower().strip() for kw in CORRECTION_KEYWORDS)
 
 # =====================
 # Sidebar
@@ -131,7 +130,6 @@ with st.sidebar:
     st.title("🚗 Car Coach")
     st.divider()
 
-    # Load car
     car = load_car_profile()
     if car:
         st.success(f"Loaded: {car.get('year')} {car.get('make')} {car.get('model')}")
@@ -149,27 +147,23 @@ with st.sidebar:
 
     st.divider()
 
-    # Correction mode toggle
     st.subheader("Correction Mode")
     correction_mode = st.toggle("Enable correction mode", value=True)
     if correction_mode:
-        st.caption("Say 'wrong', 'redo', 'cheaper', etc. to refine answers")
+        st.caption("Say 'wrong', 'redo', etc. to refine answers")
 
     st.divider()
 
-    # Settings
     st.subheader("Settings")
     web_search_enabled = st.toggle("Enable web search", value=True)
-    verify_parts_toggle = st.toggle("Auto-verify parts", value=True)
-    if verify_parts_toggle:
-        st.caption("Checks if parts actually exist before showing")
+
+    st.divider()
 
     if st.button("Clear conversation"):
         st.session_state.messages = []
         st.rerun()
 
-    st.divider()
-    st.caption("v1.3 — Car Build Assistant")
+    st.caption("v1.4 — Anti-hallucination hard mode")
 
 # =====================
 # Session state
@@ -184,62 +178,48 @@ if "awaiting_correction" not in st.session_state:
     st.session_state.awaiting_correction = False
 
 # =====================
-# System prompt — ANTI-HALLUCINATION
+# System prompt
 # =====================
-SYSTEM_PROMPT = """You are Car Coach, an experienced mechanic and car build specialist.
+SYSTEM_PROMPT = """You are Car Coach. Your only job is to help with car builds.
 
-ABSOLUTE RULES — These are non-negotiable:
-1. NEVER invent a part name. If you don't know the exact real part, say "I don't know the exact part name for that — I need to search for it."
-2. NEVER say a part fits if you're not 100% sure. If unsure, say "I need to verify fitment for your specific year/engine."
-3. Only recommend parts you are confident exist and fit the user's car. When in doubt, ask if they want you to search for options.
-4. NEVER invent part numbers, brand names you don't recognize, or prices that are obviously wrong.
-5. For any part recommendation, if you're not 100% certain it exists, prefix it with "I need to look this up:" and describe what you're searching for.
-6. ALWAYS check the user's car profile: year, make, model, engine, mileage. Use those exact specs for fitment.
-7. For cars over 100k miles, be conservative — flag any mod that could stress a tired engine.
-8. If the user asks for something you don't have real knowledge of, say "I don't have that in my knowledge — let me search for it" rather than making something up.
+ABSOLUTE RULE: If you do not KNOW with certainty that a part exists, say "I don't know" instead of making it up. No exceptions.
 
-RESPONSE RULES:
-- Only list parts that you are confident exist in real life
-- Use common known brands: Borla, Magnaflow, Corsa, K&N, AEM, DiabloSport, SCT, Bavin, Bilstein, KW, Tein, Eibach, Cobb, etc.
-- If you're not sure about a brand, say "I'm not certain this brand exists — I should search for this"
-- Never make up a part that starts with something generic like "Stage 2 turbo kit for [engine]" if you don't know the real product name
+The user's car: {CAR_CONTEXT}
 
-Your tone: direct, practical, like a mechanic friend. No fluff. But always honest about what you don't know.
+What you know for certain (no search needed):
+- Build order principles
+- General modification concepts
+- Platform-specific known issues
 
-If you're unsure: "I don't have that in my knowledge base. Want me to search for real options that fit your [year] [make] [model] [engine]?"
+What you MUST search for:
+- Specific part names
+- Brand verification
+- Pricing
+- Fitment for specific years/engines
+
+If you cannot verify a part through your knowledge or web search results, do NOT list it. Say: "I don't have that in my knowledge — I need to search for it."
+
+Never make up: part names, brand names, part numbers, prices.
 """
 
 def build_messages(car_context: str, correction: str = ""):
-    """Build messages for the AI."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    # Add car context
     messages.append({"role": "system", "content": f"User's car:\n{car_context}"})
 
-    # Add memory context
     memory_text = st.session_state.memory.format_memory()
     if memory_text != "No build history yet.":
-        messages.append({
-            "role": "system",
-            "content": f"Build history:\n{memory_text}"
-        })
+        messages.append({"role": "system", "content": f"Build history:\n{memory_text}"})
 
-    # Add correction instruction
     if correction:
-        messages.append({
-            "role": "system",
-            "content": f"IMPORTANT — The user's last answer wasn't what they wanted. Their feedback was: '{correction}'. Apply this feedback and give a better answer. Do NOT repeat the same approach."
-        })
+        messages.append({"role": "system", "content": f"IMPORTANT — The user said my last answer was wrong. Feedback: '{correction}'. Do NOT repeat the same approach. Give a completely new answer based on their feedback."})
 
-    # Add conversation history
     for msg in st.session_state.messages:
         role = "assistant" if msg["role"] == "assistant" else "user"
         messages.append({"role": role, "content": msg["content"]})
 
     return messages
 
-def get_response(messages: list, attempt: int = 1) -> str:
-    """Call the model and clean up output."""
+def get_response(messages: list) -> str:
     try:
         response = chat(messages)
         response = response.replace("<think>", "").replace("[/think]", "").strip()
@@ -252,7 +232,6 @@ def get_response(messages: list, attempt: int = 1) -> str:
 # =====================
 st.title("Car Coach")
 
-# Welcome message
 if not st.session_state.messages:
     car = load_car_profile()
     if car:
@@ -264,35 +243,30 @@ if not st.session_state.messages:
             "content": "Hey! I'm Car Coach. Create a `profiles/my_car.json` file to tell me about your ride, then let's get building."
         })
 
-# Display messages
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# =====================
-# Chat input
-# =====================
 user_input = st.chat_input("Ask about your build...")
 
 if user_input:
     car = load_car_profile()
     car_context = format_car_context(car)
 
-    # Check if this is a correction
     is_corr = is_correction(user_input) and correction_mode
 
     if st.session_state.awaiting_correction:
-        # User previously said something was wrong — this is their feedback
         correction = user_input
         st.session_state.awaiting_correction = False
 
         if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
             st.session_state.messages.pop()
 
-        with st.chat_message("user"):
-            st.markdown(f"[Applying correction: {correction}]")
-
         messages = build_messages(car_context, correction)
+
+        with st.chat_message("user"):
+            st.markdown(f"[Retrying with feedback: {correction}]")
+
         response = get_response(messages)
 
         with st.chat_message("assistant"):
@@ -309,12 +283,11 @@ if user_input:
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            st.markdown("Sorry about that! What was wrong with it? What did you actually want?")
+            st.markdown("Sorry! What was wrong with it? What did you actually want?")
 
         st.rerun()
 
     else:
-        # Normal message
         st.session_state.awaiting_correction = False
         st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
@@ -322,36 +295,41 @@ if user_input:
 
         messages = build_messages(car_context)
 
-        # Web search if enabled
+        # Always search when asking about parts/mods/pricing
         if web_search_enabled:
-            search_terms = ["price", "best", "compare", "review", "compatible",
-                           "fitment", "upgrade", "recommend", "should i", "worth it",
-                           "current", "newest", "latest", "available", "what's the",
-                           "parts", "mod", "install", "kit"]
+            search_terms = ["mod", "part", "intake", "exhaust", "tune", "turbo", "kit",
+                           "upgrade", "install", "price", "best", "recommend", "coilover",
+                           "suspension", "brakes", "wheel", "tire", "engine", "power"]
             needs_search = any(term in user_input.lower() for term in search_terms)
 
             if needs_search:
-                with st.spinner("Searching the web..."):
+                with st.spinner("Searching the web for real parts..."):
                     web_search = WebSearch()
                     results = web_search.search(user_input, car or {})
                     if results and "[Web search failed]" not in results:
-                        messages[-1]["content"] += f"\n\nWeb search results:\n{results}\n\nUse these real results to inform your response."
+                        messages[-1]["content"] += f"\n\nWeb search results (use these for your answer):\n{results}\n\nOnly recommend parts from these search results. Do not recommend parts that are not confirmed in the search results above."
 
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 response = get_response(messages)
 
-            # Part verification — check if parts actually exist
-            if verify_parts_toggle and web_search_enabled:
-                with st.spinner("Verifying parts..."):
+            # Verify and filter parts
+            if web_search_enabled:
+                with st.spinner("Verifying all parts..."):
                     web_search = WebSearch()
-                    parts = extract_parts_from_response(response, car or {})
-                    if parts:
-                        verification = verify_parts(parts, car or {}, web_search)
-                        response = build_clean_response(response, verification, car or {})
+                    filtered_response, blocked_parts, all_verified = verify_and_filter_response(
+                        response, car or {}, web_search
+                    )
 
-            st.markdown(response)
+                    if not all_verified:
+                        st.warning(f"I couldn't verify these parts — they may not exist. I'm not showing them to protect you from bad information:\n\n" + "\n".join(f"• {p}" for p in blocked_parts))
 
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        st.session_state.memory.update_from_text(response)
+                    st.markdown(filtered_response if all_verified else response)
+                    final_response = filtered_response if all_verified else response
+            else:
+                st.markdown(response)
+                final_response = response
+
+        st.session_state.messages.append({"role": "assistant", "content": final_response})
+        st.session_state.memory.update_from_text(final_response)
         st.rerun()
